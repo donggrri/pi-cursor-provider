@@ -1,8 +1,11 @@
 import rawModels from "./cursor-models-raw.json";
 import { afterEach, describe, expect, test } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
-import { buildEffortMap, FALLBACK_MODELS, parseModelId, processModels, registerSessionLifecycleCleanup, supportsReasoningModelId } from "./index.ts";
+import { tmpdir } from "node:os";
+import { join as testJoin } from "node:path";
+import { buildEffortMap, FALLBACK_MODELS, getStoredCursorToken, parseModelId, processModels, registerSessionLifecycleCleanup, supportsReasoningModelId } from "./index.ts";
 import {
   resolveModelId,
   __testInternals,
@@ -176,6 +179,9 @@ describe("reasoning support", () => {
     expect(supportsReasoningModelId("gpt-5.4")).toBe(true);
     expect(supportsReasoningModelId("gpt-5.4-fast")).toBe(true);
     expect(supportsReasoningModelId("composer-2")).toBe(true);
+    expect(supportsReasoningModelId("cursor-grok-4")).toBe(true);
+    expect(supportsReasoningModelId("glm-5")).toBe(true);
+    expect(supportsReasoningModelId("muse-1")).toBe(true);
     expect(supportsReasoningModelId("default")).toBe(true);
     expect(supportsReasoningModelId("totally-unknown-model")).toBe(false);
   });
@@ -337,8 +343,8 @@ describe("processModels", () => {
 
   test("full raw model list dedup count", () => {
     const result = processModels(rawModels as CursorModel[]);
-    // Should be significantly fewer than 83
-    expect(result.length).toBeLessThan(50);
+    // Should be significantly fewer than 254
+    expect(result.length).toBeLessThan(100);
     expect(result.length).toBeGreaterThan(20);
 
     // Spot checks
@@ -1703,3 +1709,48 @@ describe("proxy integration — session handling", () => {
 
 });
 
+describe("getStoredCursorToken", () => {
+  test("returns undefined if file does not exist", () => {
+    const nonExistent = testJoin(tmpdir(), `non-existent-${Date.now()}.json`);
+    expect(getStoredCursorToken(nonExistent)).toBeUndefined();
+  });
+
+  test("returns undefined if file is not valid JSON or lacks cursor access token", () => {
+    const tempDir = mkdtempSync(testJoin(tmpdir(), "cursor-token-test-"));
+    const invalidJsonPath = testJoin(tempDir, "invalid.json");
+    const emptyAuthPath = testJoin(tempDir, "empty.json");
+
+    try {
+      writeFileSync(invalidJsonPath, "not valid json {", "utf8");
+      expect(getStoredCursorToken(invalidJsonPath)).toBeUndefined();
+
+      writeFileSync(emptyAuthPath, JSON.stringify({ other: {} }), "utf8");
+      expect(getStoredCursorToken(emptyAuthPath)).toBeUndefined();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("returns cursor access token if present", () => {
+    const tempDir = mkdtempSync(testJoin(tmpdir(), "cursor-token-test-"));
+    const validAuthPath = testJoin(tempDir, "auth.json");
+
+    try {
+      writeFileSync(
+        validAuthPath,
+        JSON.stringify({
+          cursor: {
+            type: "oauth",
+            access: "test-stored-access-token",
+            refresh: "test-stored-refresh-token",
+          },
+        }),
+        "utf8"
+      );
+
+      expect(getStoredCursorToken(validAuthPath)).toBe("test-stored-access-token");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});

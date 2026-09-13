@@ -15,8 +15,8 @@
 import rawFallbackModels from "./cursor-models-raw.json";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@mariozechner/pi-ai";
-import { appendFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import {
   generateCursorAuthParams,
@@ -156,13 +156,21 @@ const MODEL_COST_TABLE: Record<string, ModelCost> = {
   "claude-4.5-sonnet":       { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "claude-4.6-opus":         { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
   "claude-4.6-sonnet":       { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-4.7-opus":         { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-4.8-opus":         { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-5-opus":           { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  "claude-5-sonnet":         { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-fable":            { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-fable-3":          { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "composer-1":              { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
   "composer-1.5":            { input: 3.5, output: 17.5, cacheRead: 0.35, cacheWrite: 0 },
   "composer-2":              { input: 0.5, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
+  "composer-2.5":            { input: 0.5, output: 2.5, cacheRead: 0.2, cacheWrite: 0 },
   "gemini-2.5-flash":        { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0 },
   "gemini-3-flash":          { input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0 },
   "gemini-3-pro":            { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
   "gemini-3.1-pro":          { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 0 },
+  "gemini-3.8-flash":        { input: 0.5, output: 3, cacheRead: 0.05, cacheWrite: 0 },
   "gpt-5":                   { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
   "gpt-5-mini":              { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 },
   "gpt-5.2":                 { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
@@ -170,8 +178,15 @@ const MODEL_COST_TABLE: Record<string, ModelCost> = {
   "gpt-5.3-codex":           { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
   "gpt-5.4":                 { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
   "gpt-5.4-mini":            { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
+  "gpt-5.5":                 { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+  "gpt-5.6-luna":            { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+  "gpt-5.6-sol":             { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
+  "gpt-5.6-terra":           { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
   "grok-4.20":               { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 0 },
+  "cursor-grok-4":           { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 0 },
+  "cursor-grok-4-fast":      { input: 2, output: 6, cacheRead: 0.2, cacheWrite: 0 },
   "kimi-k2.5":               { input: 0.6, output: 3, cacheRead: 0.1, cacheWrite: 0 },
+  "kimi-k3":                 { input: 0.8, output: 4, cacheRead: 0.1, cacheWrite: 0 },
 };
 
 const MODEL_COST_PATTERNS: Array<{ match: (id: string) => boolean; cost: ModelCost }> = [
@@ -179,14 +194,16 @@ const MODEL_COST_PATTERNS: Array<{ match: (id: string) => boolean; cost: ModelCo
   { match: (id) => /claude.*opus/i.test(id),         cost: MODEL_COST_TABLE["claude-4.6-opus"]! },
   { match: (id) => /claude.*haiku/i.test(id),        cost: MODEL_COST_TABLE["claude-4.5-haiku"]! },
   { match: (id) => /claude.*sonnet/i.test(id),       cost: MODEL_COST_TABLE["claude-4.6-sonnet"]! },
+  { match: (id) => /claude.*fable/i.test(id),        cost: MODEL_COST_TABLE["claude-fable"]! },
   { match: (id) => /composer/i.test(id),             cost: MODEL_COST_TABLE["composer-1"]! },
+  { match: (id) => /gpt-5\.[56]/i.test(id),          cost: MODEL_COST_TABLE["gpt-5.5"]! },
   { match: (id) => /gpt-5\.4.*mini/i.test(id),      cost: MODEL_COST_TABLE["gpt-5.4-mini"]! },
   { match: (id) => /gpt-5\.4/i.test(id),            cost: MODEL_COST_TABLE["gpt-5.4"]! },
   { match: (id) => /gpt-5\.3/i.test(id),            cost: MODEL_COST_TABLE["gpt-5.3-codex"]! },
   { match: (id) => /gpt-5\.2/i.test(id),            cost: MODEL_COST_TABLE["gpt-5.2"]! },
   { match: (id) => /gpt-5.*mini/i.test(id),          cost: MODEL_COST_TABLE["gpt-5-mini"]! },
   { match: (id) => /gpt-5/i.test(id),                cost: MODEL_COST_TABLE["gpt-5"]! },
-  { match: (id) => /gemini.*3\.1/i.test(id),        cost: MODEL_COST_TABLE["gemini-3.1-pro"]! },
+  { match: (id) => /gemini.*3\.[18]/i.test(id),      cost: MODEL_COST_TABLE["gemini-3.1-pro"]! },
   { match: (id) => /gemini.*flash/i.test(id),        cost: MODEL_COST_TABLE["gemini-2.5-flash"]! },
   { match: (id) => /gemini/i.test(id),               cost: MODEL_COST_TABLE["gemini-3-pro"]! },
   { match: (id) => /grok/i.test(id),                 cost: MODEL_COST_TABLE["grok-4.20"]! },
@@ -251,7 +268,7 @@ export function supportsReasoningModelId(id: string): boolean {
   const { base, effort, thinking } = parseModelId(id);
   if (effort || thinking) return true;
   if (base === "default") return true;
-  return /^(claude|composer|gemini|gpt|grok|kimi)(-|$)/i.test(base);
+  return /^(claude|composer|gemini|gpt|grok|cursor-grok|kimi|glm|muse)(-|$)/i.test(base);
 }
 
 /**
@@ -452,9 +469,23 @@ function registerExtensionDebugHooks(pi: ExtensionAPI) {
   debugExtensionLog("extension.debug_hooks_registered", { logFile: getExtensionDebugLogFilePath() });
 }
 
+export function getStoredCursorToken(authPath?: string): string | undefined {
+  const filePath = authPath || process.env.PI_AUTH_PATH || pathJoin(homedir(), ".pi", "agent", "auth.json");
+  try {
+    if (!existsSync(filePath)) return undefined;
+    const raw = readFileSync(filePath, "utf8");
+    const data = JSON.parse(raw);
+    const token = data?.cursor?.access;
+    return typeof token === "string" && token.trim().length > 0 ? token.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export default async function (pi: ExtensionAPI) {
-  // Current access token, updated by login/refresh/getApiKey
-  let currentToken = "";
+  // Current access token, updated by login/refresh/getApiKey/stored auth
+  let currentToken = getStoredCursorToken() ?? "";
+  let hasDiscoveredLive = false;
 
   // Start proxy eagerly — it just binds a port, no auth needed until a request arrives.
   // The getAccessToken callback reads currentToken at request time.
@@ -488,7 +519,51 @@ export default async function (pi: ExtensionAPI) {
 
   // Await proxy so models are registered before pi proceeds with model resolution.
   const port = await proxyReady;
-  register(pi, port, FALLBACK_MODELS);
+
+  if (currentToken) {
+    try {
+      const livePromise = getCursorModels(currentToken);
+      const timeoutPromise = new Promise<CursorModel[]>((resolve) => setTimeout(() => resolve([]), 2500));
+      const discovered = await Promise.race([livePromise, timeoutPromise]);
+      if (discovered && discovered.length > 0) {
+        hasDiscoveredLive = true;
+        register(pi, port, discovered);
+      } else {
+        register(pi, port, FALLBACK_MODELS);
+      }
+    } catch {
+      register(pi, port, FALLBACK_MODELS);
+    }
+  } else {
+    register(pi, port, FALLBACK_MODELS);
+  }
+
+  pi.registerCommand("cursor-refresh", {
+    description: "Refresh Cursor models from Cursor API",
+    handler: async (_args, ctx) => {
+      const token = currentToken || getStoredCursorToken();
+      if (!token) {
+        ctx.ui?.notify?.("Not logged in to Cursor. Run /login cursor first.", "warning");
+        return;
+      }
+      try {
+        const realPort = await proxyReady;
+        const discovered = await getCursorModels(token, true);
+        if (discovered.length > 0) {
+          hasDiscoveredLive = true;
+          register(pi, realPort, discovered);
+          ctx.ui?.notify?.(`Refreshed ${discovered.length} Cursor models from API.`, "info");
+        } else {
+          ctx.ui?.notify?.("No models returned from Cursor API.", "warning");
+        }
+      } catch (err) {
+        ctx.ui?.notify?.(
+          `Failed to refresh Cursor models: ${err instanceof Error ? err.message : String(err)}`,
+          "error"
+        );
+      }
+    },
+  });
 
   function register(pi: ExtensionAPI, port: number, rawModels: CursorModel[]) {
     const baseUrl = `http://127.0.0.1:${port}/v1`;
@@ -511,8 +586,11 @@ export default async function (pi: ExtensionAPI) {
 
           // Discover real models and re-register
           const realPort = await proxyReady;
-          const discovered = await getCursorModels(accessToken);
-          if (discovered.length > 0) register(pi, realPort, discovered);
+          const discovered = await getCursorModels(accessToken, true);
+          if (discovered.length > 0) {
+            hasDiscoveredLive = true;
+            register(pi, realPort, discovered);
+          }
 
           return {
             refresh: refreshToken,
@@ -527,19 +605,28 @@ export default async function (pi: ExtensionAPI) {
 
           // Discover real models on refresh too
           const realPort = await proxyReady;
-          const discovered = await getCursorModels(refreshed.access);
-          if (discovered.length > 0) register(pi, realPort, discovered);
+          const discovered = await getCursorModels(refreshed.access, true);
+          if (discovered.length > 0) {
+            hasDiscoveredLive = true;
+            register(pi, realPort, discovered);
+          }
 
           return refreshed;
         },
 
         getApiKey(credentials: OAuthCredentials): string {
           currentToken = credentials.access;
+          if (!hasDiscoveredLive) {
+            getCursorModels(credentials.access).then((models) => {
+              if (models.length > 0) {
+                hasDiscoveredLive = true;
+                register(pi, port, models);
+              }
+            }).catch(() => {});
+          }
           return "cursor-proxy";
         },
       },
     });
   }
-
-
 }

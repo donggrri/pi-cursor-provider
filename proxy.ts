@@ -438,8 +438,8 @@ export interface CursorModel {
 
 let cachedModels: CursorModel[] | null = null;
 
-export async function getCursorModels(apiKey: string): Promise<CursorModel[]> {
-  if (cachedModels) return cachedModels;
+export async function getCursorModels(apiKey: string, force = false): Promise<CursorModel[]> {
+  if (cachedModels && !force) return cachedModels;
   try {
     const requestPayload = create(GetUsableModelsRequestSchema, {});
     const requestBody = toBinary(GetUsableModelsRequestSchema, requestPayload);
