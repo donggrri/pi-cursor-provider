@@ -7,11 +7,11 @@
   "author": "Netanel Draiman",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ndraiman/pi-cursor-provider.git"
+    "url": "git+https://github.com/donggrri/pi-cursor-provider.git"
   },
-  "homepage": "https://github.com/ndraiman/pi-cursor-provider#readme",
+  "homepage": "https://github.com/donggrri/pi-cursor-provider#readme",
   "bugs": {
-    "url": "https://github.com/ndraiman/pi-cursor-provider/issues"
+    "url": "https://github.com/donggrri/pi-cursor-provider/issues"
   },
   "keywords": [
     "pi-package",
@@ -23,8 +23,16 @@
     "openai-compatible"
   ],
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": { "optional": true },
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@mariozechner/pi-ai": { "optional": true },
+    "@mariozechner/pi-coding-agent": { "optional": true }
   },
   "engines": {
     "node": ">=18"

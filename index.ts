@@ -24,7 +24,7 @@ import {
   pollCursorAuth,
   refreshCursorToken,
 } from "./auth.js";
-import { cleanupSessionState, getCursorModels, startProxy, type CursorModel } from "./proxy.js";
+import { cleanupSessionState, getCursorModels, startProxy, stopProxy, type CursorModel } from "./proxy.js";
 
 // ── Cost estimation ──
 
@@ -391,7 +391,10 @@ export function registerSessionLifecycleCleanup(pi: ExtensionAPI) {
   pi.on("session_before_switch", cleanupCurrentSession);
   pi.on("session_before_fork", cleanupCurrentSession);
   pi.on("session_before_tree", cleanupCurrentSession);
-  pi.on("session_shutdown", cleanupCurrentSession);
+  pi.on("session_shutdown", (_event, ctx) => {
+    cleanupCurrentSession(_event, ctx);
+    stopProxy();
+  });
 }
 
 function registerExtensionDebugHooks(pi: ExtensionAPI) {

@@ -1,6 +1,8 @@
-# pi-cursor-provider
+# pi-cursor-provider (donggrri fork)
 
 [![npm version](https://img.shields.io/npm/v/pi-cursor-provider.svg)](https://www.npmjs.com/package/pi-cursor-provider)
+
+Maintained fork for [steppi](https://github.com/earendil-works) and other Pi hosts that run `@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` (API-compatible with `@mariozechner/pi-*`). Upstream: [ndraiman/pi-cursor-provider](https://github.com/ndraiman/pi-cursor-provider).
 
 [Pi](https://github.com/badlogic/pi-mono) extension that provides access to [Cursor](https://cursor.com) models via OAuth authentication and a local OpenAI-compatible proxy.
 
@@ -24,14 +26,21 @@ pi  →  openai-completions  →  localhost:PORT/v1/chat/completions
 ## Install
 
 ```bash
-# Via pi install
+# steppi / earendil-works Pi host (git install)
+pi install git:github.com/donggrri/pi-cursor-provider
+
+# npm (upstream package name)
 pi install npm:pi-cursor-provider
 
 # Or manually
-git clone https://github.com/ndraiman/pi-cursor-provider ~/.pi/agent/extensions/cursor-provider
+git clone https://github.com/donggrri/pi-cursor-provider ~/.pi/agent/extensions/cursor-provider
 cd ~/.pi/agent/extensions/cursor-provider
 npm install
 ```
+
+### Host packages
+
+This extension lists optional peers for both `@earendil-works/pi-*` (steppi’s live host) and `@mariozechner/pi-*`. Install whichever pair your Pi distribution ships; the extension loads through Pi’s extension host and does not bundle either agent package.
 
 ## Usage
 
@@ -106,7 +115,7 @@ The proxy maintains conversation state per pi session, enabling multi-turn conve
 - **Session tracking** — pi's session ID is injected into requests via a `before_provider_request` hook. The proxy keys bridge state and stored conversation state from that real session ID.
 - **Checkpoints** — Cursor returns a conversation checkpoint after completed turns. The proxy stores that checkpoint, plus the completed-turn count and a fingerprint of the completed structured history, and reuses it only when the incoming history still matches.
 - **Session-scoped state** — real pi session state is kept in memory until explicit cleanup or process restart. Anonymous fallback state can still be TTL-evicted.
-- **Lifecycle cleanup** — session state is cleaned up on pi lifecycle events such as session switch, fork, `/tree`, and shutdown.
+- **Lifecycle cleanup** — session state is cleaned up on pi lifecycle events such as session switch, fork, `/tree`, and shutdown. On shutdown the local proxy HTTP server is stopped so `pi -p` / `--mode json` one-shots can exit.
 
 ### Tool continuations
 
@@ -138,7 +147,7 @@ That reconstruction preserves:
 
 ## Requirements
 
-- [Pi](https://github.com/badlogic/pi-mono)
+- Pi coding agent host: `@earendil-works/pi-coding-agent` (steppi) or `@mariozechner/pi-coding-agent`
 - [Node.js](https://nodejs.org) >= 18
 - Active [Cursor](https://cursor.com) subscription
 
