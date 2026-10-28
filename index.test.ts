@@ -22,6 +22,7 @@ import {
   parseMessages,
   setBridgeFactoryForTests,
 
+  getProxyPort,
   startProxy,
   stopProxy,
   writeSSEStreamForTests,
@@ -570,7 +571,7 @@ describe("session cleanup hook wiring", () => {
     });
 
     const ctx = { sessionManager: { getSessionId: () => sessionId } };
-    for (const event of ["session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"]) {
+    for (const event of ["session_before_switch", "session_before_fork", "session_before_tree"]) {
       __testInternals.activeBridges.set(bridgeKey, {
         bridge: {
           get alive() { return false; },
@@ -589,8 +590,8 @@ describe("session cleanup hook wiring", () => {
       __testInternals.conversationStates.set(convKey, {
         conversationId: "conv",
         checkpoint: null,
-  
-  
+
+
         sessionScoped: true,
         blobStore: new Map(),
         lastAccessMs: Date.now(),
@@ -599,6 +600,35 @@ describe("session cleanup hook wiring", () => {
       expect(__testInternals.activeBridges.has(bridgeKey)).toBe(false);
       expect(__testInternals.conversationStates.has(convKey)).toBe(false);
     }
+
+    const port = await startProxy(async () => "token");
+    expect(getProxyPort()).toBe(port);
+    __testInternals.activeBridges.set(bridgeKey, {
+      bridge: {
+        get alive() { return false; },
+        write() {},
+        end() {},
+        onData() {},
+        onClose() {},
+        proc: {} as any,
+      } as any,
+      heartbeatTimer,
+      blobStore: new Map(),
+      mcpTools: [],
+      pendingExecs: [],
+      currentTurn: turn("current"),
+    });
+    __testInternals.conversationStates.set(convKey, {
+      conversationId: "conv",
+      checkpoint: null,
+      sessionScoped: true,
+      blobStore: new Map(),
+      lastAccessMs: Date.now(),
+    });
+    await handlers.get("session_shutdown")?.({}, ctx);
+    expect(__testInternals.activeBridges.has(bridgeKey)).toBe(false);
+    expect(__testInternals.conversationStates.has(convKey)).toBe(false);
+    expect(getProxyPort()).toBeUndefined();
   });
 });
 
@@ -928,6 +958,31 @@ describe("parseMessages — structured tool turns", () => {
     ];
     const next = parseMessages(nextMsgs);
     expect(next.turns.length).toBe(3);
+  });
+
+  test("consecutive user messages with subagent roster merge into active userText", () => {
+    const parsed = parseMessages([
+      { role: "system", content: "system" },
+      { role: "user", content: "What is 2+2?" },
+      { role: "user", content: "<subagent-roster>explore, generalPurpose</subagent-roster>" },
+    ]);
+
+    expect(parsed.turns).toHaveLength(0);
+    expect(parsed.userText).toContain("What is 2+2?");
+    expect(parsed.userText).toContain("subagent-roster");
+  });
+
+  test("interrupt plus continue user messages are not merged", () => {
+    const parsed = parseMessages([
+      { role: "system", content: "system" },
+      { role: "user", content: "interrupt me" },
+      { role: "assistant", content: "partial" },
+      { role: "user", content: "continue" },
+    ]);
+
+    expect(parsed.userText).toBe("continue");
+    expect(parsed.turns).toHaveLength(1);
+    expect(parsed.turns[0]?.userText).toBe("interrupt me");
   });
 
   test("mixed resolved and unresolved tool calls stay in the in-flight turn", () => {
@@ -1657,6 +1712,99 @@ describe("proxy integration — session handling", () => {
     // Prior checkpoint reused — session continues on Cursor side
     expect(toBinary(ConversationStateStructureSchema, runRequests[0].conversationState)).toEqual(priorCheckpoint);
     expect(runRequests[0].action.action.value.userMessage.text).toBe("continue");
+  });
+
+  test("stream end error keeps conversation state and blob store for retry", async () => {
+    const sessionId = "session-stream-error";
+    const convKey = deriveConversationKeyFromSessionId(sessionId);
+    const bridgeKey = deriveBridgeKeyFromSessionId(sessionId);
+    const blobId = new Uint8Array([9, 8, 7, 6]);
+    const blobKey = Buffer.from(blobId).toString("hex");
+    const blobData = new TextEncoder().encode("keep-me");
+
+    __testInternals.conversationStates.set(convKey, {
+      conversationId: "conv-stream-error",
+      checkpoint: new Uint8Array([1, 2, 3]),
+      sessionScoped: true,
+      blobStore: new Map([[blobKey, blobData]]),
+      lastAccessMs: Date.now(),
+    });
+
+    const bridge = new FakeBridge({ accessToken: "test-token", rpcPath: "/agent.v1.AgentService/Run" });
+    const req = new EventEmitter() as any;
+    const res = new EventEmitter() as any;
+    res.headersSent = false;
+    res.writeHead = () => { res.headersSent = true; return res; };
+    res.write = () => true;
+    res.end = () => {
+      res.headersSent = true;
+      queueMicrotask(() => res.emit("close"));
+      return res;
+    };
+
+    writeSSEStreamForTests({
+      bridge: bridge as any,
+      heartbeatTimer: setInterval(() => {}, 60_000),
+      blobStore: new Map([[blobKey, blobData]]),
+      modelId: "gpt-5",
+      bridgeKey,
+      convKey,
+      completedTurns: [],
+      currentTurn: turn("hello"),
+      req,
+      res,
+    });
+
+    bridge.emitEndStream({ error: { code: "internal", message: "upstream failed" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const stored = __testInternals.conversationStates.get(convKey);
+    expect(stored).toBeDefined();
+    expect(stored?.checkpoint).toBeNull();
+    expect(Array.from(stored?.blobStore.get(blobKey) ?? [])).toEqual(Array.from(blobData));
+  });
+
+  test("kv responses after the HTTP stream closes do not throw", async () => {
+    const sessionId = "session-kv-after-close";
+    const convKey = deriveConversationKeyFromSessionId(sessionId);
+    const bridgeKey = deriveBridgeKeyFromSessionId(sessionId);
+
+    class ThrowOnDeadBridge extends FakeBridge {
+      override write(data: Uint8Array) {
+        if (!this.alive) throw new Error("ERR_STREAM_WRITE_AFTER_END");
+        super.write(data);
+      }
+    }
+
+    const bridge = new ThrowOnDeadBridge({ accessToken: "test-token", rpcPath: "/agent.v1.AgentService/Run" });
+    const req = new EventEmitter() as any;
+    const res = new EventEmitter() as any;
+    res.headersSent = false;
+    res.writeHead = () => { res.headersSent = true; return res; };
+    res.write = () => true;
+    res.end = () => {
+      res.headersSent = true;
+      queueMicrotask(() => res.emit("close"));
+      return res;
+    };
+
+    writeSSEStreamForTests({
+      bridge: bridge as any,
+      heartbeatTimer: setInterval(() => {}, 60_000),
+      modelId: "gpt-5",
+      bridgeKey,
+      convKey,
+      completedTurns: [],
+      currentTurn: turn("hello"),
+      req,
+      res,
+    });
+
+    bridge.emitEndStream({ error: { code: "internal", message: "fail" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(() => {
+      bridge.emitServerMessage(makeSetBlobMessage(new Uint8Array([1]), new Uint8Array([2])));
+    }).not.toThrow();
   });
 
   test("same-depth branch with different assistant text reuses checkpoint (pi lifecycle hooks handle real forks)", async () => {

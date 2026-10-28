@@ -682,9 +682,7 @@ async function handleChatCompletion(
   }
 
   if (activeBridge && activeBridges.has(bridgeKey)) {
-    clearInterval(activeBridge.heartbeatTimer);
-    activeBridge.bridge.end();
-    activeBridges.delete(bridgeKey);
+    cleanupBridge(activeBridge.bridge, activeBridge.heartbeatTimer, bridgeKey);
   }
 
   let stored = conversationStates.get(convKey);
@@ -788,6 +786,24 @@ function stripTurnRuntimeState(turn: ParsedTurn & {
   return { userText: turn.userText, steps: turn.steps };
 }
 
+/** Hidden pi-subagents roster injected as a user-role custom message. */
+function isSubagentRosterInjection(text: string): boolean {
+  return text.includes("<subagent-roster>") || text.includes("subagent_roster");
+}
+
+function shouldMergeConsecutiveUserChunks(previousText: string, currentText: string): boolean {
+  return isSubagentRosterInjection(previousText) || isSubagentRosterInjection(currentText);
+}
+
+function invalidateConversationCheckpoint(convKey: string): void {
+  const stored = conversationStates.get(convKey);
+  if (!stored) return;
+  stored.checkpoint = null;
+  stored.conversationId = deterministicConversationId(`${convKey}:${Date.now()}`);
+  stored.lastAccessMs = Date.now();
+  debugLog("conversation.checkpoint_invalidated", { convKey, conversationId: stored.conversationId });
+}
+
 export function parseMessages(messages: OpenAIMessage[]): ParsedMessages {
   let systemPrompt = "You are a helpful assistant.";
   const turns: ParsedTurn[] = [];
@@ -877,6 +893,15 @@ export function parseMessages(messages: OpenAIMessage[]): ParsedMessages {
 
     if (currentTurn.steps.length === 0 || isToolContinuation) {
       userText = currentTurn.userText;
+      // Pi may emit multiple consecutive user-role messages before the next
+      // assistant reply (real prompt plus hidden subagent_roster). Merge only
+      // when one chunk is that injection so interrupt + continue stays separate.
+      while (turns.length > 0 && turns[turns.length - 1]!.steps.length === 0) {
+        const previous = turns[turns.length - 1]!;
+        if (!shouldMergeConsecutiveUserChunks(previous.userText, userText)) break;
+        const merged = turns.pop()!;
+        userText = userText ? `${merged.userText}\n\n${userText}` : merged.userText;
+      }
       if (hasAnyToolResults) {
         toolResults = toolCallSteps
           .filter((step) => step.result)
@@ -1645,6 +1670,7 @@ function writeSSEStream(
   const closeResponse = () => {
     if (closed) return;
     closed = true;
+    bridgeWritesEnabled = false;
     res.end();
   };
 
@@ -1667,6 +1693,20 @@ function writeSSEStream(
   let mcpExecReceived = false;
   let cancelled = false;
   let latestCheckpoint: Uint8Array | null = null;
+  let bridgeWritesEnabled = true;
+  const sendBridgeFrame = (data: Uint8Array) => {
+    if (!bridgeWritesEnabled || !bridge.alive) return;
+    try {
+      bridge.write(data);
+    } catch (err) {
+      bridgeWritesEnabled = false;
+      debugLog("stream.bridge_write_failed", {
+        requestId,
+        bridgeKey,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
 
   // Detect client disconnect (e.g. user pressed Escape in pi)
   const onClientClose = () => {
@@ -1685,7 +1725,7 @@ function writeSSEStream(
         const serverMessage = fromBinary(AgentServerMessageSchema, messageBytes);
         processServerMessage(
           serverMessage, blobStore, mcpTools,
-          (data) => bridge.write(data),
+          sendBridgeFrame,
           state,
           (text, isThinking) => {
             if (isThinking) {
@@ -1754,7 +1794,7 @@ function writeSSEStream(
       const endError = parseConnectEndStream(endStreamBytes);
       if (endError) {
         console.error(`[cursor-provider] Cursor stream error (${modelId}):`, endError.message);
-        conversationStates.delete(convKey);
+        invalidateConversationCheckpoint(convKey);
         sendSSE(makeChunk({ content: endError.message }, "error"));
         sendSSE(makeUsageChunk());
         sendDone();
@@ -1956,6 +1996,19 @@ async function handleNonStreamingResponse(
   let fullText = "";
   let nonStreamError: Error | null = null;
   let latestCheckpoint: Uint8Array | null = null;
+  let bridgeWritesEnabled = true;
+  const sendBridgeFrame = (data: Uint8Array) => {
+    if (!bridgeWritesEnabled || !bridge.alive) return;
+    try {
+      bridge.write(data);
+    } catch (err) {
+      bridgeWritesEnabled = false;
+      debugLog("nonstream.bridge_write_failed", {
+        requestId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
 
   return new Promise((resolve) => {
     bridge.onData(createConnectFrameParser(
@@ -1964,7 +2017,7 @@ async function handleNonStreamingResponse(
           const serverMessage = fromBinary(AgentServerMessageSchema, messageBytes);
           processServerMessage(
             serverMessage, payload.blobStore, payload.mcpTools,
-            (data) => bridge.write(data),
+            sendBridgeFrame,
             state,
             (text, isThinking) => {
               if (isThinking) return;
@@ -1993,7 +2046,7 @@ async function handleNonStreamingResponse(
         const endError = parseConnectEndStream(endStreamBytes);
         if (endError) {
           console.error(`[cursor-provider] Cursor non-stream error (${modelId}):`, endError.message);
-          conversationStates.delete(convKey);
+          invalidateConversationCheckpoint(convKey);
           nonStreamError = endError;
         }
       },
